@@ -1,0 +1,28 @@
+{
+  "name": "dsh-workbuddy-bridge",
+  "version": "1.0.0",
+  "description": "dsh-go / DeepSeek Harness 插件：随引擎启动一个 127.0.0.1 的 OpenAI 兼容桥，把模型请求转到 WorkBuddy 云 LLM，避开 copilot 上游的渠道指纹校验(11128)。",
+  "type": "module",
+  "main": "lib/index.js",
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh-go",
+    "workbuddy",
+    "openai"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
