@@ -45,7 +45,7 @@ dsh-go ──> http://127.0.0.1:19427/v1 ──> 插件桥 ──> WorkBuddy 云
 | 兼容协议 | `OpenAI` |
 | Base URL | `http://127.0.0.1:19427/v1` |
 | API Key | 任意值（桥不校验），例如 `wb-bridge` |
-| 模型 | 点「获取模型」拿 37 个；或手动填 `auto` |
+| 模型 | 点「获取模型」拿 25 个可用模型；或手动填 `auto` |
 
 先在手机浏览器打开 `http://127.0.0.1:19427/healthz`，返回 `{"ok":true,...}` 说明桥已起来。
 
@@ -122,3 +122,29 @@ node publish.mjs all              # 或 github / npm 单独跑
   `minimax-video-h3`。桥在 `/v1/models` 里过滤掉它们（返回 25 个可用模型），
   旧会话若仍带着被过滤的 id 会自动回退 `auto`，不会直接报错。
 - 别用 3000 / 18765 端口（本机常被别的服务占用）。
+
+## 积分查询
+
+手机/电脑浏览器打开 `http://127.0.0.1:19427/credits` 即可看到 WorkBuddy 剩余积分。
+未配置凭证时页面直接带填写表单，填完自动保存，之后刷新就能看。
+
+| 路由 | 方法 | 说明 |
+|---|---|---|
+| `/credits` | GET | 余额状态页（HTML，手机浏览器直接看） |
+| `/v1/credits` | GET | 余额 JSON（`{ ok, data }`，给程序/页面用） |
+| `/v1/credits/set` | POST | 提交 `{ accessToken, userId? }`，写入内存并持久化到 `config.json` |
+
+**accessToken 从哪来**：浏览器登录 <https://www.workbuddy.cn> → F12 → Network →
+点任意发往 `www.workbuddy.cn` 的请求 → 复制 Request Headers 里
+`Authorization: Bearer xxxxx` 的 `xxxxx` 部分。可选填 `userId`（请求/响应头里的 `X-User-Id`）。
+桥用这个 token 调官方余额接口 `POST /billing/meter/get-user-resource-summary`。
+本机 WorkBuddy 客户端的登录态是加密的、拿不到明文，所以必须手动复制一次。
+
+凭证也可写到插件目录下的 `config.json`：
+
+```json
+{ "credits": { "accessToken": "xxxxx", "userId": "可选" } }
+```
+
+或设环境变量 `WB_CREDITS_TOKEN` / `WB_CREDITS_UID`。三种来源优先级：
+环境变量 > `config.json` > 运行时表单填写。
