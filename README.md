@@ -59,47 +59,51 @@ dsh-go ──> http://127.0.0.1:19427/v1 ──> 插件桥 ──> WorkBuddy 云
 上游 endpoint 与 publishableKey 写在 `lib/index.js` 顶部常量里，来自 WorkBuddy
 云服务的 publicConfig（公开可分发，不含长期密钥）。
 
-## 发布到 GitHub / 插件市场
+## 发布状态与安装源
 
-仓库已在本机就绪（`git init` + commit `feat: dsh-workbuddy-bridge 1.0.0`），
-`publish.mjs` 是一键发布脚本，零第三方依赖，token 只从环境变量读、不落盘。
+**GitHub 公开仓库（已上线）**：`https://github.com/moluguzhi2/dsh-workbuddy-bridge`
+分支 `main`，含 8 个文件：`.gitignore` / `LICENSE` / `README.md` / `cordis.patch.yml` /
+`package.json` / `lib/index.js` / `publish.mjs` / `test/smoke.mjs`。
+
+### 从 GitHub 直接安装（推荐，不需要 npm 账号）
+
+```bash
+# 通用 npm 安装，实测 added 1 package，落地 node_modules/dsh-workbuddy-bridge/
+npm install https://codeload.github.com/moluguzhi2/dsh-workbuddy-bridge/tar.gz/refs/heads/main
+
+# 或 dsh-go 原生命令
+dsh plugin --profile web add github:moluguzhi2/dsh-workbuddy-bridge
+```
+
+已实测可解析的两条 tarball 源：
+
+| 源 | 结果 |
+|---|---|
+| `https://codeload.github.com/moluguzhi2/dsh-workbuddy-bridge/tar.gz/refs/heads/main` | 200，10.5 kB，11 文件，gzip OK |
+| `https://quiz-helper-68853.app.workbuddy.host/dsh-workbuddy-bridge-1.0.0.tgz?sharecode=X5W37ULDJF` | 200，6.7 kB，5 文件，gzip OK |
+
+### 不要从 npm 市场名安装
+
+npm 上的 `dsh-workbuddy-bridge` 已被第三方账号 `zayninnpm` 占用（最新 `0.5.7`，
+同为 WorkBuddy → DeepSeek Harness 主题，用 GitHub Actions OIDC 发布）。
+`npm i dsh-workbuddy-bridge` 会装到**别人的包**，不是本仓库的 1.0.0。
+上面的 GitHub tarball 直装不受影响——包名由本地 `package.json` 决定，仍落在
+`node_modules/dsh-workbuddy-bridge/`，与 `cordis.patch.yml` 里的 `name` 一致。
+
+### 本仓库的发布脚本
+
+`publish.mjs` 保留为可选的一键发布入口（零第三方依赖，token 只从环境变量读、不落盘），
+需要自己有 npm 账号的 Automation token：
 
 ```powershell
-$env:GITHUB_TOKEN = "ghp_xxx"     # 需要 repo 权限
-$env:NPM_TOKEN    = "npm_xxx"     # 需要 publish 权限，Automation 类型可绕过 2FA
+$env:GITHUB_TOKEN = "ghp_xxx"     # repo 权限
+$env:NPM_TOKEN    = "npm_xxx"     # publish 权限，Automation 类型绕过 2FA
 node publish.mjs all              # 或 github / npm 单独跑
 ```
 
-脚本做的事：
-
-1. `GET /user` 拿账号名 → `POST /user/repos` 建公开仓库（已存在则复用）。
-2. 本地 `git add/commit`、`git push -u origin main`（显式清掉本机不通的 127.0.0.1 代理），
-   推完把带 token 的 remote 改回干净 URL，凭证不留在 `.git/config`。
-3. 写临时 `.npmrc`（`_authToken=${NPM_TOKEN}`）→ `npm publish --access public` → 删除 `.npmrc`。
-
-发布后两种安装源：
-
-```
-dsh plugin --profile web add github:<owner>/dsh-workbuddy-bridge
-# 或在 dsh-go 插件市场搜索 dsh-workbuddy-bridge
-```
-
-本机当前状态（真实探测）：
-
-- GitHub 连接器是 **GitHub App**（`https://api.githubcopilot.com/mcp/`），token 由 WorkBuddy 托管、不落本机。
-  `get_me` → 200（账号 `moluguzhi2`）；`create_repository` → `403 Resource not accessible by integration`；
-  `push_files` 到 `moluguzhi2/SubsTracker` → `403 Resource not accessible by integration`；
-  `get_file_contents` 读该仓库 → 200。**只读，不能写，也不能建仓库**。
-- `cmdkey /list` 无 GitHub 凭证，`npm whoami` → ENEEDAUTH，无 gh CLI、无 `GITHUB_TOKEN` / `NPM_TOKEN`。
-- git 清掉本机 127.0.0.1 代理后能匿名 `ls-remote`，但 push 必须认证。
-
-所以**还没有真正推到 GitHub / npm**，不是代码问题也不是网络问题，缺的是具有写权限的凭证。
-两条最短路径：
-
-1. 给一个 GitHub PAT（`repo`）+ npm Automation token，双击 `publish.cmd` 或跑
-   `GITHUB_TOKEN=… NPM_TOKEN=… node publish.mjs all`；
-2. 在 GitHub 网页手建空仓库 `dsh-workbuddy-bridge`，把 App 的 Contents 权限改成 write，
-   再用 `mcp__github__push_files` 推（无需 token）。
+脚本做三件事：`POST /user/repos` 建公开仓库（已存在则复用）、`git push -u origin main`
+（显式清掉本机不通的 127.0.0.1 代理，推完把带 token 的 remote 改回干净 URL）、
+写临时 `.npmrc` → `npm publish --access public` → 删除 `.npmrc`。
 
 ## 注意
 
