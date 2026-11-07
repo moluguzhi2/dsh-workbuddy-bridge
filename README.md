@@ -109,10 +109,11 @@ node publish.mjs all              # 或 github / npm 单独跑
 
 - 云 LLM 只支持流式：桥始终向上游发 `stream:true`，客户端要非流式时由桥聚合 SSE。
 - 桥会补齐 `messages[0]` 为 system、`developer` 归一化成 `system`、不认识的模型 ID 回退 `auto`。
-- 上游会拒掉带渠道指纹句式的 system（`You are an AI agent powered by DeepSeek Harness` 等），
-  尤其是 dsh-go 引擎发出的超长 system（实测 17204 字符）会返回
-  `400 request_invalid_parameter`。桥对命中指纹的 system 做裁剪：保留开头 200 字符
-  + 尾部 2000 字符；纯长文本不受影响。用引擎完整 payload（23 条消息 + 58 个 tools）
-  实测修复后返回 200。
+- 上游会拒掉带渠道指纹句式的 system（`You are an AI agent powered by DeepSeek Harness` 等）：
+  dsh-go 引擎发出的超长 system（实测 17k 字符）会返回 `400 request_invalid_parameter`。
+  这是内容级校验，删掉指纹句、补中性头、裁剪到 2200 字都仍会被拒（前 216 字 OK、
+  217 字起 FAIL）；纯长文本则不受影响。桥对命中指纹的 system 整体替换为短中性头，
+  其余 messages / tools 原样保留。用引擎完整 payload（17k system + 58 tools + 全部消息）
+  实测返回 200，手机端真实对话已跑通。
 - 引擎重启后插件会随 bundle 自动加载，不需要手动跑脚本。
 - 别用 3000 / 18765 端口（本机常被别的服务占用）。
