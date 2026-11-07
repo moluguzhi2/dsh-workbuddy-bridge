@@ -116,4 +116,9 @@ node publish.mjs all              # 或 github / npm 单独跑
   其余 messages / tools 原样保留。用引擎完整 payload（17k system + 58 tools + 全部消息）
   实测返回 200，手机端真实对话已跑通。
 - 引擎重启后插件会随 bundle 自动加载，不需要手动跑脚本。
+- 上游 `/models` 目录里有 12 个模型不支持 `chat/completions`（实测两次均 400）：
+  `hy4-preview-x`、`glm-5.0/4.7/4.6/4.6v`、`minimax-m2.5`、`kimi-k2-thinking`、
+  `hunyuan-2.0-thinking`、`hunyuan-image-alpha(-edit)`、`kling-video-v3`、
+  `minimax-video-h3`。桥在 `/v1/models` 里过滤掉它们（返回 25 个可用模型），
+  旧会话若仍带着被过滤的 id 会自动回退 `auto`，不会直接报错。
 - 别用 3000 / 18765 端口（本机常被别的服务占用）。
