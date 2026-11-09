@@ -55,11 +55,16 @@ dsh-go ──> http://127.0.0.1:19427/v1 ──> 插件桥 ──> WorkBuddy 云
 |---|---|---|
 | `WB_BRIDGE_PORT` | `19427` | 监听端口，改了要同步改 Base URL |
 | `WB_BRIDGE_TIMEOUT` | `120000` | 上游超时(ms) |
-| `WB_BRIDGE_MODE` | `plugin` | 运行模式标记，仅用于 `/healthz` 展示 |
-| `WB_BRIDGE_CONFIG` | 无 | 指定积分配置文件路径 |
+| `WB_BRIDGE_ENDPOINT` | 云服务 publicConfig | 上游地址，可热更新 |
+| `WB_BRIDGE_PUBKEY` | `wbpk_…` | webapp access key，可热更新 |
+| `WB_BRIDGE_ATTEMPTS` | `4` | 上游请求最大尝试次数 |
+| `WB_BRIDGE_RETRY_MS` | `400` | 重试退避基数(ms)：400/800/1600 |
+| `WB_BRIDGE_SYS_MAX` | `2000` | system 超过此长度一律换短中性头 |
+| `WB_BRIDGE_CONFIG` | — | 指定持久配置文件路径 |
 
-上游 endpoint 与 publishableKey 写在 `lib/index.js` 顶部常量里，来自 WorkBuddy
-云服务的 publicConfig（公开可分发，不含长期密钥）。
+endpoint / pubkey / 积分凭证都从 `/root/.dsh/bridge-config.json` 读取，**每 30 秒热重载**，
+也可通过 `POST /v1/config/set` 立即生效；换 key 不用改代码、不用重启引擎。
+用 `GET /v1/diag` 看当前 endpoint、重试/降级计数、最近上游状态码、配置路径。
 
 ## 发布状态与安装源
 
@@ -135,6 +140,8 @@ node publish.mjs all              # 或 github / npm 单独跑
 | `/credits` | GET | 余额状态页（HTML，手机浏览器直接看） |
 | `/v1/credits` | GET | 余额 JSON（`{ ok, data }`，给程序/页面用） |
 | `/v1/credits/set` | POST | 提交 `{ accessToken, userId? }`，写入内存并持久化到 `config.json` |
+| `/v1/diag` | GET | 运行诊断：pid/uptime/endpoint、重试与降级计数、最近上游状态码 |
+| `/v1/config/set` | POST | 提交 `{ endpoint?, pubkey? }`，热更新并写回持久配置 |
 
 **accessToken 从哪来**：浏览器登录 <https://www.workbuddy.cn> → F12 → Network →
 点任意发往 `www.workbuddy.cn` 的请求 → 复制 Request Headers 里
@@ -149,45 +156,39 @@ node publish.mjs all              # 或 github / npm 单独跑
 ```
 
 或设环境变量 `WB_CREDITS_TOKEN` / `WB_CREDITS_UID`。三种来源优先级：
-环境变量 > `config.json` > 运行时表单填写。传 `{"accessToken":"","userId":""}` 可清空凭证。
+环境变量 > `config.json` > 运行时表单填写。
 
-## 持久化守护（KernelSU / root）
+## 持久化守护（KSU / Magisk）
 
-只装插件时，app 被系统回收、引擎运行时升级、插件市场重装都会让桥失效。守护把这几件事兜住：
+`daemon/` 是手机端的开机自启守护，负责端口保活与代码一致性：
 
-| 文件 | 落在手机 | 作用 |
-|---|---|---|
-| `deploy/service.sh` | `/data/adb/service.d/dsh-wb-bridge.sh` | KSU 开机自启入口，后台拉起 daemon 后立即退出，不阻塞启动 |
-| `deploy/daemon.sh` | `/data/adb/dsh-wb-bridge/daemon.sh` | 每 15 秒检查 19427；掉了就拉起 app；用黄金副本还原被覆盖的 `lib/index.js`；保证配置副本 |
-| `lib/index.js` | `/data/adb/dsh-wb-bridge/bridge.mjs` | 黄金副本，放在 root 管理目录，运行时升级覆盖不到 |
-| `deploy/config.example.json` | `$RF/root/.dsh/bridge-config.json` | 积分凭证，插件与守护共用一个物理文件 |
+- `service.sh` 由 KernelSU `/data/adb/service.d/` 开机拉起 `daemon.sh`（root、PPID 1，脱离电脑）。
+- 每 15 秒查 19427；端口掉了就 `force-stop` + 重启 dsh-go app，插件桥随之恢复。
+- 用黄金副本 `/data/adb/dsh-wb-bridge/bridge.mjs` 校验并还原
+  `rootfs/root/.dsh/profiles/web/node_modules/dsh-workbuddy-bridge/lib/index.js`。
+- 保证 `/root/.dsh/bridge-config.json` 存在且属主正确，积分凭证重启不丢。
+- 日志：`/data/local/tmp/dsh-wb-bridge.log`。
 
-一键部署（电脑端，adb 已连、设备已 root）：
+**升级顺序（必须遵守）**：
 
-```bash
-bash deploy/install.sh
+```sh
+BASE=/data/adb/dsh-wb-bridge
+DST=<rootfs>/root/.dsh/profiles/web/node_modules/dsh-workbuddy-bridge/lib/index.js
+cp lib/index.js "$BASE/bridge.mjs"     # 1. 先更新 golden
+cp "$BASE/bridge.mjs" "$DST"           # 2. 再同步到插件
+chown u0_a168:u0_a168 "$DST"
+# 3. 重启引擎
 ```
 
-脚本 7 步：设备/root 检查 → 上传 → 装黄金副本 → 同步插件版 `lib/index.js` → 建配置副本 → 写 service.d 与电池优化白名单 → 重启引擎、启动守护、打印 healthz。
+只改 `node_modules` 而不更新 golden，15 秒内会被守护还原 —— 这正是「改了又失效」的根因。
+两边 `sha256sum` 应一致（当前 `e5ec5b7b…`）。
 
-验证：
+## 自愈行为
 
-```bash
-adb forward tcp:19427 tcp:19427
-curl http://127.0.0.1:19427/healthz      # {"ok":true,...,"mode":"plugin","port":19427}
-curl http://127.0.0.1:19427/credits      # 200 状态页
-adb shell am force-stop io.github.ccch1mneyyy.dsh_app   # 模拟系统回收
-sleep 30
-curl http://127.0.0.1:19427/healthz      # 应恢复，pid 变了
-adb shell tail -8 /data/local/tmp/dsh-wb-bridge.log
-```
-
-实测（2026-11-09）：杀 app 后 **10 秒内**守护拉起、`healthz` 200；把 `node_modules/lib/index.js` 改坏后 **30 秒内**从黄金副本还原；`healthz` 带 `mode` / `pid` / `uptime_s`，可直接判断谁在提供服务。守护进程 PPID 为 1，脱离 adb 与电脑。
-
-设计取舍：试过把桥做成脱离 app 的独立 root 进程（`unshare -m` + tmpfs `/etc` 补 resolv.conf），两个硬伤后放弃：
-1. Android 的 `/etc` 是 `/system/etc` 软链，挂载会传播回宿主并覆盖系统配置（`uiautomator` 直接 Aborted）；虽然 `busybox mount --make-rprivate /` 能隔离，风险仍高；
-2. 非引擎进程发 DNS 查询被 netd 拦（`ECONNREFUSED` / `EAI_AGAIN`），换网络后公共 DNS 全不可达。
-
-故持久性由「开机自启 + 端口自愈 + 代码自愈 + 配置持久」实现，DNS 交给引擎自己的 proot 环境。
-
-**外部条件**：手机必须能联网。`dumpsys connectivity` 显示 `Active default network: none` 时，桥本身正常，但所有模型请求会 `fetch failed`；联网后无需任何操作即可恢复。无 root 的设备不装守护，插件功能照常，只是没有开机自启与自动恢复。
+- 上游 408/425/429/5xx 与网络异常：桥内自动重试（默认 4 次，400/800/1600ms 退避），
+  app 无感知；实测一次上游瞬时故障由 `retries:1` 吸收，最终 200。
+- 上游 400 参数校验：自动降级为短 system + 去掉可选参数再试一次
+  （`fallbacks` 计数可见），应对 app 升级换提示词触发的新校验。
+- 模型目录拉取失败：回退旧缓存 / 内置最小目录，不让整轮对话挂掉。
+- 端口被占用：插件进入热备，每 2 秒探测，端口释放即自动接管，
+  修掉「常驻进程死了、插件已退让」导致 19427 无人服务的空窗。
