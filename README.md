@@ -205,6 +205,35 @@ cp "$BASE/cordis.patch.yml.golden" <rootfs>/root/.dsh/profiles/web/cordis.patch.
 - 端口被占用：插件进入热备，每 2 秒探测，端口释放即自动接管，
   修掉「常驻进程死了、插件已退让」导致 19427 无人服务的空窗。
 
+## 防故障回归测试（一键自检）
+
+`test/chaos.mjs` 把历史上每一种「又坏了」都真实注入一次，等自愈后断言恢复。
+零第三方依赖，Node >= 20，电脑端跑（手机开 USB 调试）。
+
+```bash
+node test/chaos.mjs --port 5053 --out chaos-report.json
+node test/chaos.mjs --local-only        # 只跑本地 WAF 模拟，完全不碰手机
+node test/chaos.mjs --skip-relaunch     # 不想打断手机上正在进行的会话
+```
+
+共 27 项：
+
+- 只读基线：healthz、自愈参数、`lastWaf` 字段、守护单实例、开机自启脚本与语法、
+  电池优化白名单、代码与配置 golden 一致性
+- 组合故障注入：同时篡改 `lib/index.js`、`cordis.patch.yml`、删积分配置 →
+  等守护一轮（18s）→ 三项全部自动还原、healthz 恢复
+- 引擎被杀：`am force-stop` → 守护记录 `port 19427 down` 并自动拉起 → healthz 200
+- 连续三轮真实上游对话全部 200
+- 本地假上游 WAF 403：瞬时 403 → 桥内重试 2 次 → 200；按内容持续 403 → 自动降级 → 200
+  （动态端口，不改手机任何配置）
+
+退出码 `0`=全绿 / `1`=有 FAIL / `2`=脚本崩溃；`--out` 写 JSON 报告。
+脚本自带 adb 连接自愈（daemon 重启后重建 forward）——不要把电脑端 adb 抖动误判成手机失效；
+Windows 上 5037 段常冲突，用 `--port 50xx` 指定干净端口。
+本地段用 Node 内置 `fetch` 发 POST，避开本机 curl 对 loopback POST 返 000 的问题。
+
+实测（2026-11-09，Redmi 24117RK2CC / Android 17）：`total=27 pass=27 fail=0 skip=0`。
+
 ## 「API Key 无效或已过期」的根治
 
 症状：会话里 0.8~1.5 秒就失败，报「API Key 无效或已过期」，而桥的
