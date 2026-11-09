@@ -55,6 +55,8 @@ dsh-go ──> http://127.0.0.1:19427/v1 ──> 插件桥 ──> WorkBuddy 云
 |---|---|---|
 | `WB_BRIDGE_PORT` | `19427` | 监听端口，改了要同步改 Base URL |
 | `WB_BRIDGE_TIMEOUT` | `120000` | 上游超时(ms) |
+| `WB_BRIDGE_MODE` | `plugin` | 运行模式标记，仅用于 `/healthz` 展示 |
+| `WB_BRIDGE_CONFIG` | 无 | 指定积分配置文件路径 |
 
 上游 endpoint 与 publishableKey 写在 `lib/index.js` 顶部常量里，来自 WorkBuddy
 云服务的 publicConfig（公开可分发，不含长期密钥）。
@@ -147,4 +149,45 @@ node publish.mjs all              # 或 github / npm 单独跑
 ```
 
 或设环境变量 `WB_CREDITS_TOKEN` / `WB_CREDITS_UID`。三种来源优先级：
-环境变量 > `config.json` > 运行时表单填写。
+环境变量 > `config.json` > 运行时表单填写。传 `{"accessToken":"","userId":""}` 可清空凭证。
+
+## 持久化守护（KernelSU / root）
+
+只装插件时，app 被系统回收、引擎运行时升级、插件市场重装都会让桥失效。守护把这几件事兜住：
+
+| 文件 | 落在手机 | 作用 |
+|---|---|---|
+| `deploy/service.sh` | `/data/adb/service.d/dsh-wb-bridge.sh` | KSU 开机自启入口，后台拉起 daemon 后立即退出，不阻塞启动 |
+| `deploy/daemon.sh` | `/data/adb/dsh-wb-bridge/daemon.sh` | 每 15 秒检查 19427；掉了就拉起 app；用黄金副本还原被覆盖的 `lib/index.js`；保证配置副本 |
+| `lib/index.js` | `/data/adb/dsh-wb-bridge/bridge.mjs` | 黄金副本，放在 root 管理目录，运行时升级覆盖不到 |
+| `deploy/config.example.json` | `$RF/root/.dsh/bridge-config.json` | 积分凭证，插件与守护共用一个物理文件 |
+
+一键部署（电脑端，adb 已连、设备已 root）：
+
+```bash
+bash deploy/install.sh
+```
+
+脚本 7 步：设备/root 检查 → 上传 → 装黄金副本 → 同步插件版 `lib/index.js` → 建配置副本 → 写 service.d 与电池优化白名单 → 重启引擎、启动守护、打印 healthz。
+
+验证：
+
+```bash
+adb forward tcp:19427 tcp:19427
+curl http://127.0.0.1:19427/healthz      # {"ok":true,...,"mode":"plugin","port":19427}
+curl http://127.0.0.1:19427/credits      # 200 状态页
+adb shell am force-stop io.github.ccch1mneyyy.dsh_app   # 模拟系统回收
+sleep 30
+curl http://127.0.0.1:19427/healthz      # 应恢复，pid 变了
+adb shell tail -8 /data/local/tmp/dsh-wb-bridge.log
+```
+
+实测（2026-11-09）：杀 app 后 **10 秒内**守护拉起、`healthz` 200；把 `node_modules/lib/index.js` 改坏后 **30 秒内**从黄金副本还原；`healthz` 带 `mode` / `pid` / `uptime_s`，可直接判断谁在提供服务。守护进程 PPID 为 1，脱离 adb 与电脑。
+
+设计取舍：试过把桥做成脱离 app 的独立 root 进程（`unshare -m` + tmpfs `/etc` 补 resolv.conf），两个硬伤后放弃：
+1. Android 的 `/etc` 是 `/system/etc` 软链，挂载会传播回宿主并覆盖系统配置（`uiautomator` 直接 Aborted）；虽然 `busybox mount --make-rprivate /` 能隔离，风险仍高；
+2. 非引擎进程发 DNS 查询被 netd 拦（`ECONNREFUSED` / `EAI_AGAIN`），换网络后公共 DNS 全不可达。
+
+故持久性由「开机自启 + 端口自愈 + 代码自愈 + 配置持久」实现，DNS 交给引擎自己的 proot 环境。
+
+**外部条件**：手机必须能联网。`dumpsys connectivity` 显示 `Active default network: none` 时，桥本身正常，但所有模型请求会 `fetch failed`；联网后无需任何操作即可恢复。无 root 的设备不装守护，插件功能照常，只是没有开机自启与自动恢复。
