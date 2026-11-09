@@ -166,18 +166,25 @@ node publish.mjs all              # 或 github / npm 单独跑
 - 每 15 秒查 19427；端口掉了就 `force-stop` + 重启 dsh-go app，插件桥随之恢复。
 - 用黄金副本 `/data/adb/dsh-wb-bridge/bridge.mjs` 校验并还原
   `rootfs/root/.dsh/profiles/web/node_modules/dsh-workbuddy-bridge/lib/index.js`。
+- 用 `/data/adb/dsh-wb-bridge/cordis.patch.yml.golden` 校验并还原
+  `rootfs/root/.dsh/profiles/web/cordis.patch.yml`：app 内的 agent 或设置页把 provider
+  改回 `apiKeyEnv` 会重现「API Key 无效或已过期」，守护每 15 秒把它改回来。
 - 保证 `/root/.dsh/bridge-config.json` 存在且属主正确，积分凭证重启不丢。
 - 日志：`/data/local/tmp/dsh-wb-bridge.log`。
+- 拉起守护用 `sh /data/adb/dsh-wb-bridge/service.sh`，别在 adb 命令行里直接写
+  `daemon.sh` 路径 —— 守护的单实例检查会把那条 shell 命令也算进去而自我退出。
 
 **升级顺序（必须遵守）**：
 
 ```sh
 BASE=/data/adb/dsh-wb-bridge
 DST=<rootfs>/root/.dsh/profiles/web/node_modules/dsh-workbuddy-bridge/lib/index.js
-cp lib/index.js "$BASE/bridge.mjs"     # 1. 先更新 golden
+cp lib/index.js "$BASE/bridge.mjs"     # 1. 先更新代码 golden
 cp "$BASE/bridge.mjs" "$DST"           # 2. 再同步到插件
 chown u0_a168:u0_a168 "$DST"
-# 3. 重启引擎
+cp daemon/cordis.patch.yml.golden "$BASE/cordis.patch.yml.golden"  # 3. 配置 golden
+cp "$BASE/cordis.patch.yml.golden" <rootfs>/root/.dsh/profiles/web/cordis.patch.yml
+# 4. 重启引擎
 ```
 
 只改 `node_modules` 而不更新 golden，15 秒内会被守护还原 —— 这正是「改了又失效」的根因。
@@ -185,10 +192,40 @@ chown u0_a168:u0_a168 "$DST"
 
 ## 自愈行为
 
-- 上游 408/425/429/5xx 与网络异常：桥内自动重试（默认 4 次，400/800/1600ms 退避），
+- 上游 403/408/425/429/5xx 与网络异常：桥内自动重试（默认 4 次，400/800/1600ms 退避），
   app 无感知；实测一次上游瞬时故障由 `retries:1` 吸收，最终 200。
-- 上游 400 参数校验：自动降级为短 system + 去掉可选参数再试一次
-  （`fallbacks` 计数可见），应对 app 升级换提示词触发的新校验。
+  403 常见于腾讯云边缘 WAF 返回 HTML 拦截页（「您的请求已中断」），
+  `/v1/diag` 的 `stats.lastWaf` 会留 1500 字符原文。
+- 请求头浏览器化：`origin` / `referer` / `user-agent` / `sec-fetch-*`，
+  降低 Node fetch 裸请求被 WAF 判成异常的概率。
+- 上游 400/403 参数或内容校验：逐级自动降级 —— L1 短 system + 去掉 tools/可选参数，
+  L2 只留 system + 最后一条 user 消息（`fallbacks` 计数可见），
+  应对 app 升级换提示词触发的新校验。实测 WAF 持续按内容拦时降级后 200。
 - 模型目录拉取失败：回退旧缓存 / 内置最小目录，不让整轮对话挂掉。
 - 端口被占用：插件进入热备，每 2 秒探测，端口释放即自动接管，
   修掉「常驻进程死了、插件已退让」导致 19427 无人服务的空窗。
+
+## 「API Key 无效或已过期」的根治
+
+症状：会话里 0.8~1.5 秒就失败，报「API Key 无效或已过期」，而桥的
+`/v1/diag` 里 `stats.requests` 不增加 —— 请求根本没发出来。
+
+原因：provider 里写了 `apiKeyEnv: CUSTOM_WB_BRIDGE_API_KEY`。pi-ai 每次请求都要
+解析这个凭据引用，解析不到就抛 `MISSING_CREDENTIAL` / `INVALID_CREDENTIAL`，
+app 把两者统一显示成「API Key 无效或已过期」。旧会话、app 内 agent 自己改过设置、
+插件市场覆盖配置都可能触发；表现就是「新对话能用、某个会话一直失效」。
+
+修法：删掉 `apiKeyEnv`。但 OpenAI 协议仍要求 Authorization 头（pi-ai 文档明确写了
+keyless 本地服务需要占位凭据），所以在 provider 里放字面值：
+
+```yaml
+      custom-wb-bridge:
+        displayName: WB-Bridge
+        api: openai-completions
+        baseURL: http://127.0.0.1:19427/v1
+        headers:
+          Authorization: Bearer wb-bridge
+```
+
+桥不校验 key，任意非空值都行。完整可用配置见 `daemon/cordis.patch.yml.golden`，
+由守护每 15 秒校验还原，app 内的 agent 改不坏。
