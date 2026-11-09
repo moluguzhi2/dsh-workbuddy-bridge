@@ -1,0 +1,4 @@
+# Android /system/bin/sh 不接受 CRLF，脚本必须保持 LF
+*.sh text eol=lf
+*.mjs text eol=lf
+*.js text eol=lf
